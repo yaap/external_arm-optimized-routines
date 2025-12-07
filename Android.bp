@@ -26,6 +26,9 @@ cc_defaults {
         "-fno-math-errno",
         "-O3",
 
+        // Make symbols weak-for-native-bridge when compiled with native_bridge_support
+        "--include=native_bridge_support/weak_for_native_bridge.h",
+
         // bionic configuration.
 
         // We're actually implementing bionic here, so we don't want <math.h>
@@ -154,12 +157,14 @@ cc_library_static {
                 "string/aarch64/experimental/memcmp-sve.S",
                 "string/aarch64/memcmp.S",
                 "string/aarch64/memcpy-advsimd.S",
+                "string/aarch64/memcpy-sve.S",
                 "string/aarch64/memcpy.S",
                 "string/aarch64/memmove-mops.S",
                 "string/aarch64/memrchr.S",
-                "string/aarch64/memset.S",
                 "string/aarch64/memset-mops.S",
                 "string/aarch64/experimental/stpcpy-sve.S",
+                "string/aarch64/memset-sve.S",
+                "string/aarch64/memset.S",
                 "string/aarch64/stpcpy.S",
                 "string/aarch64/strchrnul-mte.S",
                 "string/aarch64/experimental/strchrnul-sve.S",
