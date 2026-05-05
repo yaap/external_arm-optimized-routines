@@ -1,7 +1,7 @@
 /*
  * Single-precision SVE 2^x function.
  *
- * Copyright (c) 2023-2025, Arm Limited.
+ * Copyright (c) 2023-2026, Arm Limited.
  * SPDX-License-Identifier: MIT OR Apache-2.0 WITH LLVM-exception
  */
 
@@ -9,11 +9,18 @@
 #include "test_sig.h"
 #include "test_defs.h"
 
-#define Thres 0x1.5d5e2ap+6f
+/* For x < -SpecialBound, the result is subnormal and not handled
+   correctly by FEXPA.  */
+#define SpecialBound 0x1.f8p6f /* log2(2^126) = 126.0f.  */
+
+/* Values of x over which exp overflows or underflows.  */
+#define InfBound 0x1.0p7f /* 128.0f.  */
+#define ZeroBound -0x1.2a8p7f /* -149.0f.  */
 
 static const struct data
 {
-  float c0, c1, shift, thres;
+  float c0, c1, shift, special_bound;
+  float inf_bound, zero_bound;
 } data = {
   /* Coefficients generated using Remez algorithm with minimisation of relative
      error.  */
@@ -21,16 +28,16 @@ static const struct data
   .c1 = 0x1.ebfbe0p-3,
   /* 1.5*2^17 + 127.  */
   .shift = 0x1.803f8p17f,
-  /* Roughly 87.3. For x < -Thres, the result is subnormal and not handled
-     correctly by FEXPA.  */
-  .thres = Thres,
+  .special_bound = SpecialBound,
+  .inf_bound = InfBound,
+  .zero_bound = ZeroBound,
 };
 
 static inline svfloat32_t
 sv_exp2f_inline (svfloat32_t x, const svbool_t pg, const struct data *d)
 {
   /* exp2(x) = 2^n (1 + poly(r)), with 1 + poly(r) in [1/sqrt(2),sqrt(2)]
-    x = n + r, with r in [-1/2, 1/2].  */
+     x = n + r, with r in [-1/2, 1/2].  */
   svfloat32_t z = svadd_x (svptrue_b32 (), x, d->shift);
   svfloat32_t n = svsub_x (svptrue_b32 (), z, d->shift);
   svfloat32_t r = svsub_x (svptrue_b32 (), x, n);
@@ -44,27 +51,48 @@ sv_exp2f_inline (svfloat32_t x, const svbool_t pg, const struct data *d)
 }
 
 static svfloat32_t NOINLINE
-special_case (svfloat32_t x, svbool_t special, const struct data *d)
+special_case (svfloat32_t x, svbool_t pg, svbool_t special,
+	      const struct data *d)
 {
-  return sv_call_f32 (exp2f, x, sv_exp2f_inline (x, svptrue_b32 (), d),
-		      special);
+  /* This deals with overflow and underflow in exponential for special case
+     lanes.  */
+  svbool_t is_inf = svcmpgt (pg, x, d->inf_bound);
+  svbool_t is_zero = svcmplt (pg, x, d->zero_bound);
+
+  /* The input `x` is further reduced (to `x/2`) to allow for accurate
+     approximation on the interval `x > SpecialBound = 126.0`.  */
+  x = svmul_x (special, x, 0.5);
+
+  /* Computes exp(x/2), and set lanes with underflow/overflow.  */
+  svfloat32_t half_exp = sv_exp2f_inline (x, svptrue_b32 (), d);
+  half_exp = svmul_m (special, half_exp, half_exp);
+  half_exp = svsel (is_inf, sv_f32 (INFINITY), half_exp);
+
+  return svsel (is_zero, sv_f32 (0), half_exp);
 }
 
 /* Single-precision SVE exp2f routine, based on the FEXPA instruction.
-   Worst case error is 1.09 ULPs.
-   _ZGVsMxv_exp2f (0x1.9a2a94p-1) got 0x1.be1054p+0
-				 want 0x1.be1052p+0.  */
+   Worst case error is 2.87 +0.50 ULP.
+   _ZGVsMxv_exp2f (0x1.fbcb78p+6) got 0x1.ee1d32p+126
+				 want 0x1.ee1d2cp+126.  */
 svfloat32_t SV_NAME_F1 (exp2) (svfloat32_t x, const svbool_t pg)
 {
   const struct data *d = ptr_barrier (&data);
-  svbool_t special = svacgt (pg, x, d->thres);
+  svbool_t special = svacgt (pg, x, d->special_bound);
   if (unlikely (svptest_any (special, special)))
-    return special_case (x, special, d);
+    return special_case (x, pg, special, d);
   return sv_exp2f_inline (x, pg, d);
 }
 
 TEST_SIG (SV, F, 1, exp2, -9.9, 9.9)
-TEST_ULP (SV_NAME_F1 (exp2), 0.59)
-TEST_SYM_INTERVAL (SV_NAME_F1 (exp2), 0, Thres, 50000)
-TEST_SYM_INTERVAL (SV_NAME_F1 (exp2), Thres, inf, 50000)
+TEST_ULP (SV_NAME_F1 (exp2), 2.88)
+/* Positive x.  */
+TEST_INTERVAL (SV_NAME_F1 (exp2), 0, SpecialBound, 50000)
+TEST_INTERVAL (SV_NAME_F1 (exp2), SpecialBound, InfBound, 50000)
+TEST_INTERVAL (SV_NAME_F1 (exp2), InfBound, inf, 50000)
+/* Negative x.  */
+TEST_INTERVAL (SV_NAME_F1 (exp2), -0, ZeroBound, 50000)
+TEST_INTERVAL (SV_NAME_F1 (exp2), ZeroBound, -inf, 50000)
+/* Full range including NaNs.  */
+TEST_INTERVAL (SV_NAME_F1 (exp2), 0, 0xffff0000, 50000)
 CLOSE_SVE_ATTR
